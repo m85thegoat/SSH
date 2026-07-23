@@ -1,0 +1,711 @@
+
+import subprocess
+import threading
+import queue
+import random
+import time
+import json
+import os
+import sys
+import socket
+import re
+import requests
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# ===== TELEGRAM BOT CONFIG =====
+TELEGRAM_BOT_TOKEN = ""
+TELEGRAM_CHAT_ID = ""
+
+class TelegramNotifier:
+    """Send TEXT notifications to Telegram (No files)"""
+
+    def __init__(self, token=TELEGRAM_BOT_TOKEN, chat_id=TELEGRAM_CHAT_ID):
+        self.token = token
+        self.chat_id = chat_id
+        self.base_url = f"https://api.telegram.org/bot{token}"
+        self.vps_batch = []
+        self.batch_size = 5
+
+    def send_message(self, message):
+        """Send text message to Telegram"""
+        try:
+            url = f"{self.base_url}/sendMessage"
+            data = {
+                "chat_id": self.chat_id,
+                "text": message,
+                "parse_mode": "HTML"
+            }
+            response = requests.post(url, data=data, timeout=10)
+            return response.status_code == 200
+        except Exception as e:
+            print(f"[!] Telegram error: {e}")
+            return False
+
+    def send_vps_found(self, ip, banner):
+        """Send VPS found notification (TEXT only)"""
+        message = f"""🔍 <b>SSH SERVER FOUND!</b>
+
+🌐 IP: <code>{ip}</code>
+🖥️ Banner: <code>{banner or 'Unknown'}</code>
+📅 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+🔎 Running vulnerability scan..."""
+        return self.send_message(message)
+
+    def send_vulnerable_vps(self, ip, vulns, exploits=None):
+        """Send vulnerable VPS with all details (TEXT only)"""
+        vuln_list = '\n'.join([f"  ⚠️ {v}" for v in vulns])
+
+        exploit_list = ""
+        if exploits:
+            exploit_list = '\n'.join([f"  🔥 {e}" for e in exploits[:5]])
+
+        message = f"""🚨 <b>FOUND VULNERABLE VPS!</b>
+
+🌐 IP: <code>{ip}</code>
+🔐 Vulnerabilities Found: <b>{len(vulns)}</b>
+
+📋 <b>Vulnerability List:</b>
+{vuln_list if vuln_list else '  None found'}
+
+{'🛠️ <b>Available Exploits:</b>' + exploit_list if exploits else ''}
+
+📅 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+⚡ <b>Actions Required:</b>
+• Update OpenSSH immediately
+• Apply security patches
+• Check for unauthorized access
+• Review security logs
+
+#VulnerabilityAlert #SSH #VPS #Security"""
+        return self.send_message(message)
+
+    def send_exploit_found(self, ip, exploits):
+        """Send exploit scan results"""
+        exploit_list = '\n'.join([f"  🔥 {e}" for e in exploits[:10]])
+
+        message = f"""💀 <b>EXPLOITABLE VPS FOUND!</b>
+
+🌐 IP: <code>{ip}</code>
+🔧 Exploits Available: <b>{len(exploits)}</b>
+
+📋 <b>Exploit List:</b>
+{exploit_list}
+
+📅 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+⚠️ <b>CRITICAL - Take Action Now!</b>
+• Block this IP immediately
+• Patch vulnerability
+• Check for breaches
+• Review all logs
+
+#ExploitAlert #CriticalVulnerability #SSH #VPS"""
+        return self.send_message(message)
+
+    def add_to_batch(self, ip, vulns, exploits=None):
+        """Add VPS to batch and send when 5 collected"""
+        self.vps_batch.append({
+            "ip": ip,
+            "vulns": vulns,
+            "exploits": exploits or [],
+            "time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        })
+
+        # Send when batch reaches 5
+        if len(self.vps_batch) >= 5:
+            self.send_batch()
+
+    def send_batch(self):
+        """Send batch of 5 VPS vulnerabilities (TEXT only)"""
+        if not self.vps_batch:
+            return
+
+        message = f"""📊 <b>VULNERABLE VPS BATCH REPORT</b>
+{'='*40}
+
+✅ <b>Found {len(self.vps_batch)} Vulnerable VPS</b>
+📅 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+"""
+
+        for i, vps in enumerate(self.vps_batch, 1):
+            vuln_list = '\n'.join([f"    ⚠️ {v}" for v in vps['vulns'][:5]])
+            exploit_list = '\n'.join([f"    🔥 {e}" for e in vps['exploits'][:3]]) if vps['exploits'] else "    🔒 No exploits found"
+
+            message += f"""<b>{i}. VPS IP:</b> <code>{vps['ip']}</code>
+   🔐 Vulnerabilities ({len(vps['vulns'])}):
+{vuln_list}
+   🛠️ Exploits:
+{exploit_list}
+   📅 Found: {vps['time']}
+
+"""
+
+        message += """{'='*40}
+⚠️ <b>Immediate Action Required!</b>
+• Update SSH to latest version
+• Apply security patches
+• Check for backdoors
+• Review access logs
+• Block malicious IPs
+
+#VPSAlert #SSHVulnerability #SecurityAlert"""
+
+        self.send_message(message)
+        self.vps_batch = []
+
+    def send_final_summary(self, total_scanned, total_found, total_vulns, total_exploits, top_vulns):
+        """Send final scan summary (TEXT only)"""
+        top_vuln_list = '\n'.join([f"  ⚠️ {k}: {v} servers" for k, v in list(top_vulns.items())[:5]])
+
+        message = f"""📊 <b>FINAL SCAN SUMMARY REPORT</b>
+{'='*40}
+
+📌 Total IPs Scanned: <b>{total_scanned}</b>
+🔓 SSH Servers Found: <b>{total_found}</b>
+⚠️ Vulnerable Servers: <b>{total_vulns}</b>
+💀 Exploitable Servers: <b>{total_exploits}</b>
+
+🔐 <b>Top Vulnerabilities Found:</b>
+{top_vuln_list if top_vuln_list else '  ✅ No vulnerabilities found'}
+
+📅 Report Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+{'='*40}
+✅ Scan completed successfully.
+#SecurityReport #SSHScan #VulnerabilityAssessment #ExploitScan"""
+        return self.send_message(message)
+
+    def send_test_message(self):
+        """Send test message"""
+        message = """✅ <b>SSH Scanner Telegram Bot is Active!</b>
+
+📌 Features:
+• Random IP scanning
+• SSH port detection
+• Vulnerability scanning
+• Exploit scanning (nmap --script exploit)
+• Real-time VPS alerts
+• Batch reporting (5 VPS per batch)
+
+⚡ Ready to scan for vulnerabilities and exploits!"""
+        return self.send_message(message)
+
+class SSHScanner:
+    def __init__(self, thread_count=50):
+        self.targets = queue.Queue()
+        self.thread_count = thread_count
+        self.lock = threading.Lock()
+        self.results = []
+        self.sshs_found = []
+        self.vulnerable_ips = []
+        self.exploitable_ips = []
+        self.scanned_ips = set()
+        self.total_scanned = 0
+        self.total_found = 0
+        self.total_vulns = 0
+        self.total_exploits = 0
+        self.vuln_stats = {}
+        self.sessions = []
+        self.batch_count = 0
+
+        # Telegram notifier
+        self.telegram = TelegramNotifier()
+
+        # Private IP ranges to skip
+        self.private_ranges = [
+            "10.", "172.16.", "172.17.", "172.18.", "172.19.",
+            "172.20.", "172.21.", "172.22.", "172.23.", "172.24.",
+            "172.25.", "172.26.", "172.27.", "172.28.", "172.29.",
+            "172.30.", "172.31.", "192.168.", "127.", "169.254."
+        ]
+
+    def generate_random_ips(self, count=10000):
+        """Generate random public IPs"""
+        print(f"[*] Generating {count} random IPs...")
+        self.telegram.send_message(f"🔄 <b>Scan Started</b>\n📌 Scanning {count} random IPs...")
+
+        for _ in range(count):
+            while True:
+                a = random.randint(1, 223)
+                if a == 127: continue
+                b = random.randint(0, 255)
+                c = random.randint(0, 255)
+                d = random.randint(1, 254)
+                ip = f"{a}.{b}.{c}.{d}"
+
+                # Skip private IPs
+                skip = False
+                for private in self.private_ranges:
+                    if ip.startswith(private):
+                        skip = True
+                        break
+                if skip:
+                    continue
+                break
+
+            self.targets.put(ip)
+
+    def check_ssh_port(self, ip, port=22, timeout=2):
+        """Check if SSH port is open"""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            result = sock.connect_ex((ip, port))
+            sock.close()
+            return result == 0
+        except:
+            return False
+
+    def get_ssh_banner(self, ip, port=22, timeout=2):
+        """Get SSH banner"""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            sock.connect((ip, port))
+            banner = sock.recv(1024).decode('utf-8', errors='ignore').strip()
+            sock.close()
+            return banner
+        except:
+            return None
+
+    def scan_ip(self, ip):
+        """Scan a single IP for SSH"""
+        if ip in self.scanned_ips:
+            return
+
+        with self.lock:
+            self.scanned_ips.add(ip)
+            self.total_scanned += 1
+
+        if self.check_ssh_port(ip):
+            banner = self.get_ssh_banner(ip)
+
+            with self.lock:
+                self.total_found += 1
+                result = {
+                    "ip": ip,
+                    "port": 22,
+                    "status": "OPEN",
+                    "banner": banner if banner else "Unknown",
+                    "timestamp": datetime.now().isoformat()
+                }
+                self.sshs_found.append(ip)
+                self.results.append(result)
+
+                print(f"[{self.total_found}] ✅ {ip} | SSH OPEN | {banner if banner else 'No Banner'}")
+
+                # Save to file (local only)
+                with open("ssh_ips.txt", "a") as f:
+                    f.write(f"{ip}\n")
+
+                # Send to Telegram (TEXT only)
+                self.telegram.send_vps_found(ip, banner)
+
+    def worker(self):
+        """Thread worker for scanning"""
+        while not self.targets.empty():
+            try:
+                ip = self.targets.get_nowait()
+                self.scan_ip(ip)
+                self.targets.task_done()
+            except queue.Empty:
+                break
+            except Exception:
+                self.targets.task_done()
+                continue
+
+    def run_nmap_vuln_scan(self, ip_list, threads=5):
+        """Run nmap vulnerability scan on found IPs"""
+        print("\n" + "="*70)
+        print("🔐 NMAP VULNERABILITY SCAN")
+        print("="*70)
+        print(f"Targets: {len(ip_list)}")
+        print(f"Threads: {threads}")
+        print("="*70)
+
+        if not ip_list:
+            print("[!] No IPs to scan")
+            return []
+
+        results = []
+
+        def scan_ip(ip):
+            try:
+                print(f"\n[*] Vulnerability Scanning: {ip}")
+                cmd = f"nmap --script vuln -p 22 {ip} -oN nmap_vuln_{ip}.txt"
+                subprocess.run(cmd, shell=True, timeout=300)
+
+                # Parse results
+                result_file = f"nmap_vuln_{ip}.txt"
+                vulns = []
+                if os.path.exists(result_file):
+                    with open(result_file, 'r') as f:
+                        content = f.read()
+
+                    # Extract CVEs
+                    vulns = re.findall(r'CVE-\d{4}-\d{4,7}', content)
+                    vulns = list(set(vulns))
+
+                    # Extract vulnerability descriptions
+                    vuln_patterns = [
+                        r'VULNERABLE:\s*([^\n]+)',
+                        r'CVE-\d{4}-\d{4,7}.*?([^\n]+)',
+                    ]
+
+                    for pattern in vuln_patterns:
+                        matches = re.findall(pattern, content)
+                        for match in matches:
+                            if match not in vulns and len(match) > 5:
+                                vulns.append(match.strip())
+
+                    if vulns:
+                        print(f"  [+] Vulnerabilities found: {len(vulns)}")
+
+                        # Run exploit scan on vulnerable IPs
+                        exploits = self.run_nmap_exploit_scan(ip)
+
+                        results.append({
+                            "ip": ip,
+                            "vulnerabilities": vulns,
+                            "exploits": exploits,
+                            "output": content[:1000],
+                            "file": result_file
+                        })
+
+                        # Update stats
+                        with self.lock:
+                            self.total_vulns += 1
+                            self.vulnerable_ips.append(ip)
+                            for vuln in vulns:
+                                self.vuln_stats[vuln] = self.vuln_stats.get(vuln, 0) + 1
+
+                        # Send to Telegram
+                        self.telegram.add_to_batch(ip, vulns, exploits)
+                        self.batch_count += 1
+
+                        # Save session
+                        self.save_session(ip, vulns, exploits, content[:500])
+                    else:
+                        print(f"  ✅ No vulnerabilities found on {ip}")
+            except Exception as e:
+                print(f"  [!] Error scanning {ip}: {e}")
+
+        with ThreadPoolExecutor(max_workers=threads) as executor:
+            futures = [executor.submit(scan_ip, ip) for ip in ip_list]
+            for future in as_completed(futures):
+                pass
+
+        # Send remaining batch if less than 5
+        if self.telegram.vps_batch:
+            self.telegram.send_batch()
+
+        return results
+
+    def run_nmap_exploit_scan(self, ip):
+        """Run nmap exploit scan on vulnerable IPs"""
+        try:
+            print(f"  [*] Exploit Scanning: {ip}")
+            cmd = f"nmap --script exploit -p 22 {ip} -oN nmap_exploit_{ip}.txt"
+            subprocess.run(cmd, shell=True, timeout=300)
+
+            result_file = f"nmap_exploit_{ip}.txt"
+            exploits = []
+
+            if os.path.exists(result_file):
+                with open(result_file, 'r') as f:
+                    content = f.read()
+
+                # Extract exploit information
+                exploit_patterns = [
+                    r'EXPLOIT:\s*([^\n]+)',
+                    r'exploit\s*=\s*([^\n]+)',
+                    r'EXPLOITABLE:\s*([^\n]+)',
+                    r'CVE-\d{4}-\d{4,7}.*?EXPLOIT',
+                    r'Metasploit.*?exploit',
+                ]
+
+                for pattern in exploit_patterns:
+                    matches = re.findall(pattern, content, re.IGNORECASE)
+                    for match in matches:
+                        if len(match) > 5:
+                            exploits.append(match.strip())
+
+                # Check for known exploit keywords
+                exploit_keywords = [
+                    "exploit", "metasploit", "msf", "payload",
+                    "rce", "remote code execution", "privilege escalation",
+                    "buffer overflow", "authentication bypass"
+                ]
+
+                for keyword in exploit_keywords:
+                    if keyword.lower() in content.lower():
+                        exploits.append(f"Possible {keyword} exploit")
+
+                exploits = list(set(exploits))
+
+                if exploits:
+                    print(f"    🔥 Exploits found: {len(exploits)}")
+                    with self.lock:
+                        self.total_exploits += 1
+                        self.exploitable_ips.append(ip)
+
+                    # Send exploit alert
+                    self.telegram.send_exploit_found(ip, exploits)
+                else:
+                    print(f"    🔒 No exploits found")
+
+            return exploits
+
+        except Exception as e:
+            print(f"  [!] Error in exploit scan: {e}")
+            return []
+
+    def save_session(self, ip, vulns, exploits, output):
+        """Save scanning session"""
+        session = {
+            "ip": ip,
+            "timestamp": datetime.now().isoformat(),
+            "vulnerabilities": vulns,
+            "exploits": exploits,
+            "output": output,
+            "status": "completed"
+        }
+
+        with self.lock:
+            self.sessions.append(session)
+
+            # Save to file (local only)
+            with open("sessions.json", "w") as f:
+                json.dump(self.sessions, f, indent=2)
+
+            # Save vulnerable IPs (local only)
+            if vulns:
+                with open("vulnerable_ips.txt", "a") as f:
+                    f.write(f"{ip} | {', '.join(vulns)} | {datetime.now()}\n")
+
+            # Save exploitable IPs
+            if exploits:
+                with open("exploitable_ips.txt", "a") as f:
+                    f.write(f"{ip} | {', '.join(exploits)} | {datetime.now()}\n")
+
+    def start_scan(self, ip_count=10000, threads=50):
+        """Start the SSH scan"""
+        print("="*70)
+        print("🔍 SSH SCANNER + NMAP VULN + EXPLOIT + TELEGRAM")
+        print("="*70)
+        print(f"IPs to scan: {ip_count}")
+        print(f"Threads: {threads}")
+        print("="*70)
+
+        # Send start message
+        self.telegram.send_message(f"🚀 <b>SCAN STARTED</b>\n📌 Scanning {ip_count} random IPs\n🔄 Threads: {threads}")
+
+        self.generate_random_ips(ip_count)
+
+        # Start threads
+        thread_list = []
+        for _ in range(threads):
+            t = threading.Thread(target=self.worker, daemon=True)
+            t.start()
+            thread_list.append(t)
+
+        # Monitor progress
+        while self.targets.qsize() > 0:
+            time.sleep(2)
+            remaining = self.targets.qsize()
+            print(f"\r[*] Scanned: {self.total_scanned} | Found: {self.total_found} | Remaining: {remaining}", end="")
+
+        self.targets.join()
+        for t in thread_list:
+            t.join(timeout=2)
+
+        print("\n")
+        self.show_summary()
+
+    def show_summary(self):
+        """Show scan summary"""
+        print("="*70)
+        print("📊 SCAN SUMMARY")
+        print("="*70)
+        print(f"Total IPs Scanned: {self.total_scanned}")
+        print(f"SSH Servers Found: {self.total_found}")
+        print("="*70)
+
+    def load_ips_from_file(self, filename="ssh_ips.txt"):
+        """Load IPs from file"""
+        if not os.path.exists(filename):
+            return []
+
+        with open(filename, 'r') as f:
+            return [line.strip() for line in f if line.strip()]
+
+    def interactive_session_manager(self):
+        """Interactive session manager"""
+        while True:
+            print("\n" + "="*60)
+            print("📁 SESSION MANAGER + TELEGRAM NOTIFIER")
+            print("="*60)
+            print("1. Scan SSH + Vuln + Exploit (Complete)")
+            print("2. Run Vulnerability Scan Only")
+            print("3. Run Exploit Scan on Vulnerable IPs")
+            print("4. Scan from File")
+            print("5. Show Found SSH IPs")
+            print("6. Show Vulnerable IPs")
+            print("7. Show Exploitable IPs")
+            print("8. View Sessions")
+            print("9. Export Results")
+            print("10. Send Test Message")
+            print("11. Exit")
+            print("="*60)
+
+            choice = input("\n[?] Select option: ").strip()
+
+            if choice == "1":
+                count = int(input("Number of IPs to scan (default: 5000): ") or "5000")
+                threads = int(input("Scan threads (default: 50): ") or "50")
+                self.start_scan(count, threads)
+
+                if self.sshs_found:
+                    print(f"\n[*] Found {len(self.sshs_found)} SSH servers")
+                    run_scan = input("Run vuln + exploit scan? (y/n): ").lower()
+                    if run_scan == 'y':
+                        vuln_threads = int(input("Nmap threads (default: 5): ") or "5")
+                        self.run_nmap_vuln_scan(self.sshs_found[:50], vuln_threads)
+
+            elif choice == "2":
+                ips = self.load_ips_from_file("ssh_ips.txt")
+                if not ips:
+                    print("[!] No IPs found")
+                    continue
+
+                print(f"[*] Found {len(ips)} IPs")
+                limit = int(input("Limit (default: 50): ") or "50")
+                threads = int(input("Threads (default: 5): ") or "5")
+                self.run_nmap_vuln_scan(ips[:limit], threads)
+
+            elif choice == "3":
+                vuln_ips = []
+                if os.path.exists("vulnerable_ips.txt"):
+                    with open("vulnerable_ips.txt", 'r') as f:
+                        for line in f:
+                            ip = line.split('|')[0].strip()
+                            vuln_ips.append(ip)
+
+                if not vuln_ips:
+                    print("[!] No vulnerable IPs found")
+                    continue
+
+                print(f"[*] Found {len(vuln_ips)} vulnerable IPs")
+                limit = int(input("Limit (default: 10): ") or "10")
+
+                for ip in vuln_ips[:limit]:
+                    self.run_nmap_exploit_scan(ip)
+
+            elif choice == "4":
+                filename = input("Filename (default: ssh_ips.txt): ") or "ssh_ips.txt"
+                ips = self.load_ips_from_file(filename)
+                if ips:
+                    print(f"[*] Loaded {len(ips)} IPs")
+                    limit = int(input("Limit (default: 50): ") or "50")
+                    threads = int(input("Threads (default: 5): ") or "5")
+                    self.run_nmap_vuln_scan(ips[:limit], threads)
+
+            elif choice == "5":
+                if os.path.exists("ssh_ips.txt"):
+                    with open("ssh_ips.txt", 'r') as f:
+                        print("\n🔓 Found SSH IPs:")
+                        print(f.read()[:1000])
+                else:
+                    print("[!] No IPs found")
+
+            elif choice == "6":
+                if os.path.exists("vulnerable_ips.txt"):
+                    with open("vulnerable_ips.txt", 'r') as f:
+                        print("\n⚠️ Vulnerable IPs:")
+                        print(f.read())
+                else:
+                    print("[!] No vulnerable IPs")
+
+            elif choice == "7":
+                if os.path.exists("exploitable_ips.txt"):
+                    with open("exploitable_ips.txt", 'r') as f:
+                        print("\n💀 Exploitable IPs:")
+                        print(f.read())
+                else:
+                    print("[!] No exploitable IPs")
+
+            elif choice == "8":
+                if not self.sessions:
+                    print("[!] No sessions")
+                    continue
+
+                print("\n📋 Sessions:")
+                for i, session in enumerate(self.sessions, 1):
+                    vuln_count = len(session.get('vulnerabilities', []))
+                    exp_count = len(session.get('exploits', []))
+                    print(f"  [{i}] {session['ip']} | Vulns: {vuln_count} | Exploits: {exp_count}")
+
+            elif choice == "9":
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"export_{timestamp}.json"
+
+                export_data = {
+                    "timestamp": timestamp,
+                    "sessions": self.sessions,
+                    "total_scanned": self.total_scanned,
+                    "total_found": self.total_found,
+                    "vulnerable_ips": self.vulnerable_ips,
+                    "exploitable_ips": self.exploitable_ips,
+                    "vuln_stats": self.vuln_stats
+                }
+
+                with open(filename, "w") as f:
+                    json.dump(export_data, f, indent=2)
+
+                print(f"[+] Exported to: {filename}")
+
+            elif choice == "10":
+                if self.telegram.send_test_message():
+                    print("[+] Test message sent!")
+                else:
+                    print("[!] Failed to send")
+
+            elif choice == "11":
+                print("Exiting...")
+                break
+
+            else:
+                print("[!] Invalid option")
+
+def main():
+    scanner = SSHScanner()
+
+    if os.path.exists("sessions.json"):
+        with open("sessions.json", "r") as f:
+            scanner.sessions = json.load(f)
+
+    print("[*] Testing Telegram...")
+    scanner.telegram.send_test_message()
+
+    print("="*70)
+    print("🔐 SSH SCANNER + VULN + EXPLOIT + TELEGRAM")
+    print("="*70)
+    print("Features:")
+    print("  ✓ Random IP Generation")
+    print("  ✓ SSH Port Scanning")
+    print("  ✓ Nmap Vulnerability Scan (--script vuln)")
+    print("  ✓ Nmap Exploit Scan (--script exploit)")
+    print("  ✓ Telegram TEXT Notifications")
+    print("  ✓ Batch Reporting (5 VPS per batch)")
+    print("="*70)
+    print("⚠️ FOR AUTHORIZED TESTING ONLY!")
+    print("="*70)
+
+    scanner.interactive_session_manager()
+
+if __name__ == "__main__":
+    main()
